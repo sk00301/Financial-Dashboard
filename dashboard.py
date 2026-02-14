@@ -2044,8 +2044,7 @@ elif st.session_state.active_tab == "index_ratio":
             title=f'{name1} vs {name2}',
             xaxis_title='Date',
             yaxis=dict(
-                title=name1,
-                titlefont=dict(color='#00bfff'),
+                title=dict(text=name1, font=dict(color='#00bfff')),
                 tickfont=dict(color='#00bfff')
             ),
             yaxis2=dict(
