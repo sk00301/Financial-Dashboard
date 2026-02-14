@@ -2048,8 +2048,7 @@ elif st.session_state.active_tab == "index_ratio":
                 tickfont=dict(color='#00bfff')
             ),
             yaxis2=dict(
-                title=name2,
-                titlefont=dict(color='#ffa500'),
+                title=dict(text=name2, font=dict(color='#ffa500')),
                 tickfont=dict(color='#ffa500'),
                 overlaying='y',
                 side='right'
