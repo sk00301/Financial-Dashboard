@@ -2071,38 +2071,6 @@ elif st.session_state.active_tab == "index_ratio":
         
         return fig
     
-    # File diagnostics section
-    with st.expander("🔍 File Diagnostics"):
-        st.markdown("**Index Data Directory:**")
-        if os.path.exists(INDEX_DATA_DIR):
-            st.success(f"✅ Directory exists: {INDEX_DATA_DIR}")
-        else:
-            st.error(f"❌ Directory not found: {INDEX_DATA_DIR}")
-        
-        st.markdown("**Monetary Data File:**")
-        if os.path.exists(MONETARY_DATA_FILE):
-            st.success(f"✅ File exists: {MONETARY_DATA_FILE}")
-            
-            # Check permissions
-            if os.access(MONETARY_DATA_FILE, os.R_OK):
-                st.success("✅ File is readable")
-            else:
-                st.error("❌ No read permission")
-                
-            # Check if file is locked
-            try:
-                with open(MONETARY_DATA_FILE, 'rb') as f:
-                    pass
-                st.success("✅ File is not locked")
-            except PermissionError:
-                st.error("❌ File is locked (probably open in Excel)")
-                st.info("💡 **Solution:** Close the Excel file and refresh this page")
-            except Exception as e:
-                st.warning(f"⚠️ Could not verify file lock: {e}")
-        else:
-            st.error(f"❌ File not found: {MONETARY_DATA_FILE}")
-            st.info("💡 **Solution:** Update the file path in the code")
-    
     # Load available data sources
     available_indices = load_available_indices(INDEX_DATA_DIR)
     monetary_columns = load_monetary_columns(MONETARY_DATA_FILE)
