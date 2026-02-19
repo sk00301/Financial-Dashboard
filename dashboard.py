@@ -617,12 +617,13 @@ with st.sidebar:
 
 
 # =============================================================================
-# TAB 1: STOCKS BELOW DMA WITH TRADINGVIEW CHARTS (FULL HISTORICAL DATA)
+# TAB 1: STOCKS BELOW DMA/WMA WITH TRADINGVIEW CHARTS (FULL HISTORICAL DATA)
 # =============================================================================
 
 import os
 import pickle
 from datetime import datetime, timedelta
+from pathlib import Path
 import pandas as pd
 import yfinance as yf
 import streamlit as st
@@ -634,6 +635,30 @@ DATA_dir = Path(__file__).parent / "Data"
 DATA_DIR = DATA_dir / "stock_data_cache"
 os.makedirs(DATA_DIR, exist_ok=True)
 
+# File path for below DMA tracking data
+BELOW_DMA_FILE = DATA_dir / "below_dma(2004).csv"
+
+def parse_mixed_dates(date_series):
+    """Try multiple date formats to handle mixed date columns"""
+    formats = ['%d-%m-%Y', '%Y-%m-%d', '%m-%d-%Y', '%d/%m/%Y', '%Y/%m/%d']
+    
+    result = pd.Series([pd.NaT] * len(date_series), index=date_series.index)
+    remaining_mask = pd.Series([True] * len(date_series), index=date_series.index)
+    
+    for fmt in formats:
+        if not remaining_mask.any():
+            break
+        parsed = pd.to_datetime(
+            date_series[remaining_mask], 
+            format=fmt, 
+            errors='coerce'
+        )
+        success_mask = parsed.notna()
+        result[remaining_mask] = result[remaining_mask].where(~success_mask, parsed[success_mask])
+        remaining_mask[remaining_mask] = ~success_mask
+    
+    return result
+
 if st.session_state.active_tab == "stocks_below_dma":
     st.header("Stocks Trading Below Moving Average")
     
@@ -642,15 +667,211 @@ if st.session_state.active_tab == "stocks_below_dma":
         col1, col2, col3 = st.columns(3)
         
         with col1:
-            st.markdown("### Select DMA Period")
-            dma_period = st.selectbox(
+            st.markdown("### Select MA Type")
+            ma_type = st.selectbox(
                 "",
-                options=[7, 30, 50, 100, 200, 365],
-                index=4,  # Default to 200
-                help="Choose the moving average period for analysis",
+                options=["DMA (Daily)", "WMA (Weekly)"],
+                index=0,
+                help="Choose between Daily Moving Average or Weekly Moving Average",
                 label_visibility="collapsed",
-                key="dma_period_select"
+                key="ma_type_select"
             )
+        
+        with col2:
+            st.markdown("### Select Period")
+            if ma_type == "DMA (Daily)":
+                ma_period = st.selectbox(
+                    "",
+                    options=[7, 30, 50, 100, 200, 365],
+                    index=4,  # Default to 200
+                    help="Choose the moving average period for analysis",
+                    label_visibility="collapsed",
+                    key="ma_period_select"
+                )
+            else:  # WMA
+                ma_period = st.selectbox(
+                    "",
+                    options=[25, 50, 100],
+                    index=1,  # Default to 50
+                    help="Choose the weekly moving average period for analysis",
+                    label_visibility="collapsed",
+                    key="wma_period_select"
+                )
+        
+        with col3:
+            st.markdown("### Historical Tracking")
+            show_tracking_chart = st.checkbox(
+                "Show Below 200 DMA Trend",
+                value=False,
+                help="Display historical chart of stocks below 200 DMA from CSV file",
+                key="show_tracking_chart"
+            )
+    
+    # Simple standalone tracking chart - completely separate section
+    if show_tracking_chart:
+        st.markdown("---")
+        st.subheader("📊 Historical Trend: Stocks Below 200 DMA")
+        
+        try:
+            # Read the CSV file
+            df_tracking = pd.read_csv(BELOW_DMA_FILE)
+            
+            # Parse date with explicit format (DD-MM-YYYY)
+            df_tracking['date'] = parse_mixed_dates(df_tracking['date'])
+            
+            # Drop any rows where date parsing failed (NaT values)
+            initial_count = len(df_tracking)
+            df_tracking = df_tracking.dropna(subset=['date'])
+            dropped_count = initial_count - len(df_tracking)
+            
+            if dropped_count > 0:
+                st.warning(f"⚠️ Dropped {dropped_count} rows with invalid dates")
+            
+            # Sort by date
+            df_tracking = df_tracking.sort_values('date').reset_index(drop=True)
+            
+            if len(df_tracking) == 0:
+                st.error("❌ No valid data found after parsing dates")
+            else:
+                # Show info about data
+                st.info(f"📅 Data from {df_tracking['date'].min().strftime('%Y-%m-%d')} to {df_tracking['date'].max().strftime('%Y-%m-%d')} ({len(df_tracking)} total days)")
+                
+                # Time range selector - more prominent
+                st.markdown("#### 📅 Select Time Range")
+                col1, col2, col3, col4, col5, col6 = st.columns(6)
+                
+                time_ranges = {'1M': 30, '3M': 90, '6M': 180, '1Y': 365, '2Y': 730, 'ALL': None}
+                
+                if 'tracking_range' not in st.session_state:
+                    st.session_state.tracking_range = '1Y'  # Default to 1 year for better performance
+                
+                with col1:
+                    if st.button('1M', use_container_width=True, key='tr_1m', type='primary' if st.session_state.tracking_range == '1M' else 'secondary'):
+                        st.session_state.tracking_range = '1M'
+                        st.rerun()
+                with col2:
+                    if st.button('3M', use_container_width=True, key='tr_3m', type='primary' if st.session_state.tracking_range == '3M' else 'secondary'):
+                        st.session_state.tracking_range = '3M'
+                        st.rerun()
+                with col3:
+                    if st.button('6M', use_container_width=True, key='tr_6m', type='primary' if st.session_state.tracking_range == '6M' else 'secondary'):
+                        st.session_state.tracking_range = '6M'
+                        st.rerun()
+                with col4:
+                    if st.button('1Y', use_container_width=True, key='tr_1y', type='primary' if st.session_state.tracking_range == '1Y' else 'secondary'):
+                        st.session_state.tracking_range = '1Y'
+                        st.rerun()
+                with col5:
+                    if st.button('2Y', use_container_width=True, key='tr_2y', type='primary' if st.session_state.tracking_range == '2Y' else 'secondary'):
+                        st.session_state.tracking_range = '2Y'
+                        st.rerun()
+                with col6:
+                    if st.button('ALL', use_container_width=True, key='tr_all', type='primary' if st.session_state.tracking_range == 'ALL' else 'secondary'):
+                        st.session_state.tracking_range = 'ALL'
+                        st.rerun()
+                
+                # Filter data based on selected range
+                selected_range = st.session_state.tracking_range
+                if selected_range == 'ALL':
+                    filtered_df = df_tracking.copy()
+                else:
+                    days = time_ranges[selected_range]
+                    cutoff = datetime.now() - timedelta(days=days)
+                    filtered_df = df_tracking[df_tracking['date'] >= cutoff].copy()
+                
+                # Remove any NaT that might have slipped through
+                filtered_df = filtered_df.dropna(subset=['date'])
+                
+                if len(filtered_df) == 0:
+                    st.warning(f"⚠️ No data points in selected range ({selected_range})")
+                else:
+                    st.success(f"✅ Showing {len(filtered_df)} data points for **{selected_range}** range")
+                    
+                    # Prepare chart data - with explicit NaT check
+                    chart_data = []
+                    for _, row in filtered_df.iterrows():
+                        if pd.notna(row['date']) and pd.notna(row['pct_below_200dma']):
+                            chart_data.append({
+                                'time': row['date'].strftime('%Y-%m-%d'),
+                                'value': float(row['pct_below_200dma'])
+                            })
+                    
+                    if len(chart_data) == 0:
+                        st.error("❌ No valid chart data after filtering")
+                    else:
+                        # Display chart
+                        renderLightweightCharts([{
+                            "chart": {
+                                "layout": {
+                                    "background": {"type": "solid", "color": "#0e1117"},
+                                    "textColor": "#d1d4dc"
+                                },
+                                "grid": {
+                                    "vertLines": {"color": "rgba(42, 46, 57, 0.5)"},
+                                    "horzLines": {"color": "rgba(42, 46, 57, 0.5)"}
+                                },
+                                "crosshair": {
+                                    "mode": 0,
+                                    "vertLine": {
+                                        "color": "rgba(224, 227, 235, 0.8)",
+                                        "labelBackgroundColor": "#2962FF"
+                                    },
+                                    "horzLine": {
+                                        "color": "rgba(224, 227, 235, 0.8)",
+                                        "labelBackgroundColor": "#2962FF"
+                                    }
+                                },
+                                "timeScale": {
+                                    "borderColor": "rgba(197, 203, 206, 0.4)",
+                                    "timeVisible": True,
+                                    "secondsVisible": False
+                                },
+                                "rightPriceScale": {
+                                    "borderColor": "rgba(197, 203, 206, 0.4)",
+                                    "scaleMargins": {"top": 0.1, "bottom": 0.1}
+                                },
+                                "width": 0,
+                                "height": 500
+                            },
+                            "series": [{
+                                "type": "Area",
+                                "data": chart_data,
+                                "options": {
+                                    "topColor": "rgba(255, 82, 82, 0.56)",
+                                    "bottomColor": "rgba(255, 82, 82, 0.04)",
+                                    "lineColor": "rgba(255, 82, 82, 1)",
+                                    "lineWidth": 2,
+                                    "priceLineVisible": False,
+                                    "lastValueVisible": True,
+                                    "title": "% Below 200 DMA"
+                                }
+                            }]
+                        }], f'tracking_chart_{selected_range}')
+                        
+                        # Summary stats
+                        col1, col2, col3, col4 = st.columns(4)
+                        with col1:
+                            st.metric("Current %", f"{filtered_df['pct_below_200dma'].iloc[-1]:.2f}%")
+                        with col2:
+                            st.metric("Average %", f"{filtered_df['pct_below_200dma'].mean():.2f}%")
+                        with col3:
+                            st.metric("Max %", f"{filtered_df['pct_below_200dma'].max():.2f}%")
+                        with col4:
+                            st.metric("Min %", f"{filtered_df['pct_below_200dma'].min():.2f}%")
+            
+        except FileNotFoundError:
+            st.warning(f"⚠️ Tracking file not found: {BELOW_DMA_FILE}")
+            st.info("💡 The file should be located at: `Data/stock_data_cache/below_dma.csv`")
+        except Exception as e:
+            st.error(f"❌ Error loading tracking data: {str(e)}")
+            import traceback
+            with st.expander("🔍 Error Details"):
+                st.code(traceback.format_exc())
+        
+        st.markdown("---")
+        
+        st.markdown("---")
+    
     
     @st.cache_data(ttl=86400)  # Cache for 24 hours
     def load_nse_tickers():
@@ -692,19 +913,32 @@ if st.session_state.active_tab == "stocks_below_dma":
         except Exception as e:
             pass  # Silently fail if cache save fails
 
-    def get_stock_data_incremental(symbol, dma_period):
+    def convert_daily_to_weekly(df):
+        """Convert daily data to weekly data"""
+        # Resample to weekly data (Friday close)
+        weekly = pd.DataFrame()
+        weekly['Open'] = df['Open'].resample('W-FRI').first()
+        weekly['High'] = df['High'].resample('W-FRI').max()
+        weekly['Low'] = df['Low'].resample('W-FRI').min()
+        weekly['Close'] = df['Close'].resample('W-FRI').last()
+        weekly['Volume'] = df['Volume'].resample('W-FRI').sum()
+        
+        # Drop NaN rows
+        weekly = weekly.dropna()
+        
+        return weekly
+
+    def get_stock_data_incremental(symbol, ma_period, ma_type):
         """
         Fetch stock data with FULL HISTORICAL DATA (15 years) for charts
         - Loads historical data from cache if available
         - Only fetches new data since last update
         - Combines cached + new data for complete dataset
+        - Supports both DMA and WMA
         """
         try:
             ticker = f"{symbol}.NS"
             today = datetime.now().date()
-            
-            # Calculate start date for 15 years ago
-            fifteen_years_ago = datetime.now() - timedelta(days=15*365 + 4)  # +4 for leap years
             
             # Try to load cached data
             cached_df, last_update = load_cached_data(symbol)
@@ -764,53 +998,93 @@ if st.session_state.active_tab == "stocks_below_dma":
                 if not df.empty:
                     save_cached_data(symbol, df, today)
             
-            if df.empty or len(df) < dma_period:
+            if df.empty:
                 return None
             
-            # Calculate moving averages
-            df[f'MA_{dma_period}'] = df['Close'].rolling(window=dma_period).mean()
-            df['MA_50'] = df['Close'].rolling(window=50).mean()
-            df['MA_20'] = df['Close'].rolling(window=20).mean()
+            # Check minimum data requirement for daily first
+            if len(df) < ma_period:
+                return None
+            
+            # Convert to weekly if needed - ONLY for WMA mode
+            if ma_type == "WMA (Weekly)":
+                # Store original daily data before conversion
+                df_daily = df.copy()
+                df = convert_daily_to_weekly(df)
+                
+                if df.empty or len(df) < ma_period:
+                    return None
+                
+                # Calculate moving averages on weekly data
+                df[f'MA_{ma_period}'] = df['Close'].rolling(window=ma_period).mean()
+                df['MA_50'] = df['Close'].rolling(window=50).mean()
+                df['MA_20'] = df['Close'].rolling(window=20).mean()
+                
+                # Store daily data as attribute for charting
+                df.attrs['daily_data'] = df_daily
+                df.attrs['ma_type'] = ma_type
+            else:
+                # For DMA, calculate on daily data directly (FASTER - no copying needed)
+                df[f'MA_{ma_period}'] = df['Close'].rolling(window=ma_period).mean()
+                df['MA_50'] = df['Close'].rolling(window=50).mean()
+                df['MA_20'] = df['Close'].rolling(window=20).mean()
+                df.attrs['ma_type'] = ma_type
             
             return df
             
         except Exception as e:
             return None
-
-    def analyze_single_stock(symbol, dma_period):
-        """Analyze a single stock - helper function for parallel processing"""
-        df = get_stock_data_incremental(symbol, dma_period)
         
-        if df is not None and not df[f'MA_{dma_period}'].isna().all():
+    def convert_daily_to_weekly(df):
+        """Convert daily data to weekly data - OPTIMIZED"""
+        # Use agg instead of separate resample calls (single pass)
+        weekly = df.resample('W-FRI').agg({
+            'Open': 'first',
+            'High': 'max', 
+            'Low': 'min',
+            'Close': 'last',
+            'Volume': 'sum'
+        }).dropna()
+        
+        return weekly
+    
+    
+    
+    def analyze_single_stock(symbol, ma_period, ma_type):
+        """Analyze a single stock - helper function for parallel processing"""
+        df = get_stock_data_incremental(symbol, ma_period, ma_type)
+        
+        if df is not None and not df[f'MA_{ma_period}'].isna().all():
             latest = df.iloc[-1]
             current_price = latest['Close']
-            ma_value = latest[f'MA_{dma_period}']
+            ma_value = latest[f'MA_{ma_period}']
             
             if pd.notna(ma_value) and current_price < ma_value:
                 # Calculate percentage below MA
                 pct_below = ((current_price - ma_value) / ma_value) * 100
                 
                 # Get additional metrics
-                dma_high = df['High'].tail(dma_period).max()
-                dma_low = df['Low'].tail(dma_period).min()
+                period_high = df['High'].tail(ma_period).max()
+                period_low = df['Low'].tail(ma_period).min()
                 volume = latest['Volume']
                 ma_50 = df['Close'].rolling(window=50).mean().iloc[-1]
+                
+                ma_label = f"{ma_period} {'WMA' if ma_type == 'WMA (Weekly)' else 'DMA'}"
                 
                 return {
                     'Symbol': symbol,
                     'Current Price': round(current_price, 2),
-                    f'{dma_period} DMA': round(ma_value, 2),
-                    f'% Below {dma_period} DMA': round(pct_below, 2),
-                    '50 DMA': round(ma_50, 2) if pd.notna(ma_50) else None,
+                    ma_label: round(ma_value, 2),
+                    f'% Below {ma_label}': round(pct_below, 2),
+                    '50 MA': round(ma_50, 2) if pd.notna(ma_50) else None,
                     'Volume': int(volume),
-                    f'{dma_period}-Day High': round(dma_high, 2), 
-                    f'{dma_period}-Day Low': round(dma_low, 2),
+                    f'{ma_period}-Period High': round(period_high, 2), 
+                    f'{ma_period}-Period Low': round(period_low, 2),
                     'Data': df  # Store full dataframe for charting
                 }
         return None
 
-    def analyze_stocks(symbols, dma_period, max_stocks=None):
-        """Analyze stocks and find those below DMA - OPTIMIZED WITH PARALLEL PROCESSING"""
+    def analyze_stocks(symbols, ma_period, ma_type, max_stocks=None):
+        """Analyze stocks and find those below MA - OPTIMIZED WITH PARALLEL PROCESSING"""
         results = []
         total = len(symbols) if max_stocks is None else min(max_stocks, len(symbols))
         symbols_to_analyze = symbols[:total]
@@ -828,7 +1102,7 @@ if st.session_state.active_tab == "stocks_below_dma":
         with ThreadPoolExecutor(max_workers=10) as executor:
             # Submit all tasks
             future_to_symbol = {
-                executor.submit(analyze_single_stock, symbol, dma_period): symbol 
+                executor.submit(analyze_single_stock, symbol, ma_period, ma_type): symbol 
                 for symbol in symbols_to_analyze
             }
             
@@ -865,12 +1139,12 @@ if st.session_state.active_tab == "stocks_below_dma":
         
         return results
 
-    def create_red_gradient_style(df_results, dma_period):
-        """Create a custom red gradient for % Below DMA column"""
+    def create_red_gradient_style(df_results, ma_label):
+        """Create a custom red gradient for % Below MA column"""
         import numpy as np
         
-        # Get the % Below DMA values
-        pct_col = f'% Below {dma_period} DMA'
+        # Get the % Below MA values
+        pct_col = f'% Below {ma_label}'
         values = df_results[pct_col].values
         
         # Normalize values between 0 and 1
@@ -895,13 +1169,16 @@ if st.session_state.active_tab == "stocks_below_dma":
         # Create format dict
         format_dict = {
             'Current Price': '₹{:.2f}',
-            f'{dma_period} DMA': '₹{:.2f}',
-            '50 DMA': '₹{:.2f}',
+            ma_label: '₹{:.2f}',
+            '50 MA': '₹{:.2f}',
             pct_col: '{:.2f}%',
             'Volume': '{:,.0f}',
-            f'{dma_period}-Day High': '₹{:.2f}',
-            f'{dma_period}-Day Low': '₹{:.2f}'
         }
+        
+        # Add format for high/low columns
+        for col in df_results.columns:
+            if 'High' in col or 'Low' in col:
+                format_dict[col] = '₹{:.2f}'
         
         # Apply styles
         styles = df_results.style.apply(
@@ -911,59 +1188,112 @@ if st.session_state.active_tab == "stocks_below_dma":
         
         return styles
 
-    def create_tradingview_chart(df, symbol, dma_period, chart_key):
+    def create_tradingview_chart(df, symbol, ma_period, ma_type, chart_key):
         """Create TradingView-style interactive chart with FULL historical data"""
         
-        # Prepare candlestick data
-        candle_data = []
-        for idx, row in df.iterrows():
-            candle_data.append({
-                'time': int(idx.timestamp()),
-                'open': float(row['Open']),
-                'high': float(row['High']),
-                'low': float(row['Low']),
-                'close': float(row['Close'])
-            })
+        # ── Step 1: Get correct dataframe and calculate MAs ──────────────────────
+        if ma_type == "WMA (Weekly)" and hasattr(df, 'attrs') and 'daily_data' in df.attrs:
+            chart_df = df.attrs['daily_data'].copy()
+            
+            # Calculate daily MAs BEFORE reset_index
+            chart_df['MA_20'] = chart_df['Close'].rolling(window=20).mean()
+            chart_df['MA_50'] = chart_df['Close'].rolling(window=50).mean()
+            
+            # Strip timezone from both indexes
+            weekly_index = df.index.tz_localize(None) if df.index.tzinfo else df.index
+            daily_index  = chart_df.index.tz_localize(None) if chart_df.index.tzinfo else chart_df.index
+            
+            # Build weekly MA series
+            weekly_ma = pd.Series(
+                df[f'MA_{ma_period}'].values,
+                index=weekly_index
+            ).dropna()
+            
+            # Vectorized merge_asof to map weekly MA to daily dates
+            daily_dates  = pd.DataFrame({'date': daily_index})
+            weekly_dates = pd.DataFrame({'date': weekly_ma.index, 'wma': weekly_ma.values})
+            
+            merged = pd.merge_asof(
+                daily_dates.sort_values('date'),
+                weekly_dates.sort_values('date'),
+                on='date',
+                direction='backward'
+            )
+            chart_df[f'MA_{ma_period}_Weekly'] = merged['wma'].values
+
+        else:
+            chart_df = df.copy()
+            # Ensure MA columns exist for DMA mode
+            if f'MA_{ma_period}' not in chart_df.columns:
+                chart_df[f'MA_{ma_period}'] = chart_df['Close'].rolling(window=ma_period).mean()
+            if 'MA_50' not in chart_df.columns:
+                chart_df['MA_50'] = chart_df['Close'].rolling(window=50).mean()
+            if 'MA_20' not in chart_df.columns:
+                chart_df['MA_20'] = chart_df['Close'].rolling(window=20).mean()
+
+        # ── Step 2: Vectorized data preparation ──────────────────────────────────
+        chart_df = chart_df.reset_index()
+        date_col = chart_df.columns[0]  # handles 'Date', 'Datetime', 'index' etc.
+        chart_df = chart_df.rename(columns={date_col: 'date'})
         
-        # Prepare DMA line data
-        dma_data = []
-        for idx, row in df.iterrows():
-            if pd.notna(row.get(f'MA_{dma_period}')):
-                dma_data.append({
-                    'time': int(idx.timestamp()),
-                    'value': float(row[f'MA_{dma_period}'])
-                })
+        # Ensure date column is proper datetime
+        chart_df['date'] = pd.to_datetime(chart_df['date'])
         
-        # Prepare 50 DMA
+        # Strip timezone
+        if chart_df['date'].dt.tz is not None:
+            chart_df['date'] = chart_df['date'].dt.tz_localize(None)
+        
+        # Unix timestamp column
+        chart_df['ts'] = (chart_df['date'].astype('int64') // 10**9).astype(int)
+
+        # Candlestick data
+        candle_data = (
+            chart_df[['ts', 'Open', 'High', 'Low', 'Close']]
+            .rename(columns={'ts': 'time', 'Open': 'open',
+                            'High': 'high', 'Low': 'low', 'Close': 'close'})
+            .to_dict('records')
+        )
+
+        # Primary MA line
+        ma_col = (
+            f'MA_{ma_period}_Weekly'
+            if ma_type == "WMA (Weekly)" and f'MA_{ma_period}_Weekly' in chart_df.columns
+            else f'MA_{ma_period}'
+        )
+        ma_data = (
+            chart_df.loc[chart_df[ma_col].notna(), ['ts', ma_col]]
+            .rename(columns={'ts': 'time', ma_col: 'value'})
+            .to_dict('records')
+        )
+
+        # 50 MA line
         ma50_data = []
-        if 'MA_50' in df.columns:
-            for idx, row in df.iterrows():
-                if pd.notna(row['MA_50']):
-                    ma50_data.append({
-                        'time': int(idx.timestamp()),
-                        'value': float(row['MA_50'])
-                    })
-        
-        # Prepare 20 DMA
+        if 'MA_50' in chart_df.columns:
+            ma50_data = (
+                chart_df.loc[chart_df['MA_50'].notna(), ['ts', 'MA_50']]
+                .rename(columns={'ts': 'time', 'MA_50': 'value'})
+                .to_dict('records')
+            )
+
+        # 20 MA line
         ma20_data = []
-        if 'MA_20' in df.columns:
-            for idx, row in df.iterrows():
-                if pd.notna(row['MA_20']):
-                    ma20_data.append({
-                        'time': int(idx.timestamp()),
-                        'value': float(row['MA_20'])
-                    })
-        
-        # Prepare volume data
-        volume_data = []
-        for idx, row in df.iterrows():
-            volume_data.append({
-                'time': int(idx.timestamp()),
-                'value': float(row['Volume']),
-                'color': '#26a69a' if row['Close'] >= row['Open'] else '#ef5350'
-            })
-        
-        # TradingView-style chart configuration with INCREASED HEIGHT
+        if 'MA_20' in chart_df.columns:
+            ma20_data = (
+                chart_df.loc[chart_df['MA_20'].notna(), ['ts', 'MA_20']]
+                .rename(columns={'ts': 'time', 'MA_20': 'value'})
+                .to_dict('records')
+            )
+
+        # Volume histogram
+        chart_df['color'] = '#26a69a'
+        chart_df.loc[chart_df['Close'] < chart_df['Open'], 'color'] = '#ef5350'
+        volume_data = (
+            chart_df[['ts', 'Volume', 'color']]
+            .rename(columns={'ts': 'time', 'Volume': 'value'})
+            .to_dict('records')
+        )
+
+        # ── Step 3: Chart config ──────────────────────────────────────────────────
         chart_options = {
             "layout": {
                 "background": {"type": "solid", "color": "#0e1117"},
@@ -974,145 +1304,101 @@ if st.session_state.active_tab == "stocks_below_dma":
                 "horzLines": {"color": "rgba(42, 46, 57, 0.5)"},
             },
             "crosshair": {
-                "mode": 0,
+                "mode": 1,
                 "vertLine": {
-                    "width": 1,
-                    "color": "rgba(224, 227, 235, 0.5)",
-                    "style": 0,
-                    "labelBackgroundColor": "#2962FF",
+                    "width": 1, "color": "rgba(224, 227, 235, 0.8)",
+                    "style": 0, "labelBackgroundColor": "#2962FF",
+                    "visible": True, "labelVisible": True,
                 },
                 "horzLine": {
-                    "width": 1,
-                    "color": "rgba(224, 227, 235, 0.5)",
-                    "style": 0,
-                    "labelBackgroundColor": "#2962FF",
+                    "width": 1, "color": "rgba(224, 227, 235, 0.8)",
+                    "style": 0, "labelBackgroundColor": "#2962FF",
+                    "visible": True, "labelVisible": True,
                 },
             },
             "timeScale": {
                 "borderColor": "rgba(197, 203, 206, 0.4)",
-                "timeVisible": True,
-                "secondsVisible": False,
-                "rightOffset": 12,
-                "barSpacing": 10,
-                "minBarSpacing": 0.5,
-                "fixLeftEdge": False,
-                "fixRightEdge": False,
+                "timeVisible": True, "secondsVisible": False,
+                "rightOffset": 12, "barSpacing": 10, "minBarSpacing": 0.5,
+                "fixLeftEdge": False, "fixRightEdge": False,
                 "lockVisibleTimeRangeOnResize": True,
                 "rightBarStaysOnScroll": True,
-                "borderVisible": True,
-                "visible": True,
+                "borderVisible": True, "visible": True,
             },
             "rightPriceScale": {
                 "borderColor": "rgba(197, 203, 206, 0.4)",
-                "scaleMargins": {
-                    "top": 0.05,
-                    "bottom": 0.15,
-                },
+                "scaleMargins": {"top": 0.05, "bottom": 0.15},
                 "autoScale": True,
             },
             "handleScroll": {
-                "mouseWheel": True,
-                "pressedMouseMove": True,
-                "horzTouchDrag": True,
-                "vertTouchDrag": False,
+                "mouseWheel": True, "pressedMouseMove": True,
+                "horzTouchDrag": True, "vertTouchDrag": False,
             },
             "handleScale": {
-                "axisPressedMouseMove": True,
-                "mouseWheel": True,
-                "pinch": True,
+                "axisPressedMouseMove": True, "mouseWheel": True, "pinch": True,
             },
-            "kineticScroll": {
-                "touch": True,
-                "mouse": False,
-            },
-            "width": 0,  # Auto width
-            "height": 800,  # INCREASED HEIGHT for full-screen feel
+            "kineticScroll": {"touch": True, "mouse": False},
+            "width": 0,
+            "height": 800,
         }
-        
-        # Series configurations
+
+        ma_label = f"{ma_period} {'WMA' if ma_type == 'WMA (Weekly)' else 'DMA'}"
+
+        # ── Step 4: Build series ──────────────────────────────────────────────────
         series = [
             {
                 "type": "Candlestick",
                 "data": candle_data,
                 "options": {
-                    "upColor": "#26a69a",
-                    "downColor": "#ef5350",
+                    "upColor": "#26a69a", "downColor": "#ef5350",
                     "borderVisible": False,
-                    "wickUpColor": "#26a69a",
-                    "wickDownColor": "#ef5350",
-                    "priceScaleId": "right",
+                    "wickUpColor": "#26a69a", "wickDownColor": "#ef5350",
+                    "priceScaleId": "right", "title": symbol,
                 }
             },
             {
                 "type": "Line",
-                "data": dma_data,
+                "data": ma_data,
                 "options": {
-                    "color": "#ffa500",
-                    "lineWidth": 2,
-                    "title": f"{dma_period} DMA",
-                    "priceScaleId": "right",
-                    "lastValueVisible": True,
-                    "priceLineVisible": True,
+                    "color": "#ffa500", "lineWidth": 2,
+                    "title": ma_label, "priceScaleId": "right",
+                    "lastValueVisible": True, "priceLineVisible": True,
                 }
             }
         ]
-        
-        # Add 50 DMA
+
         if ma50_data:
             series.append({
-                "type": "Line",
-                "data": ma50_data,
+                "type": "Line", "data": ma50_data,
                 "options": {
-                    "color": "#00bfff",
-                    "lineWidth": 1.5,
-                    "lineStyle": 2,
-                    "title": "50 DMA",
-                    "priceScaleId": "right",
-                    "lastValueVisible": True,
-                    "priceLineVisible": False,
+                    "color": "#00bfff", "lineWidth": 1.5, "lineStyle": 2,
+                    "title": "50 DMA", "priceScaleId": "right",
+                    "lastValueVisible": True, "priceLineVisible": False,
                 }
             })
-        
-        # Add 20 DMA
+
         if ma20_data:
             series.append({
-                "type": "Line",
-                "data": ma20_data,
+                "type": "Line", "data": ma20_data,
                 "options": {
-                    "color": "#9c27b0",
-                    "lineWidth": 1,
-                    "lineStyle": 2,
-                    "title": "20 DMA",
-                    "priceScaleId": "right",
-                    "lastValueVisible": False,
-                    "priceLineVisible": False,
+                    "color": "#9c27b0", "lineWidth": 1, "lineStyle": 2,
+                    "title": "20 DMA", "priceScaleId": "right",
+                    "lastValueVisible": False, "priceLineVisible": False,
                 }
             })
-        
-        # Add volume histogram
+
         series.append({
-            "type": "Histogram",
-            "data": volume_data,
+            "type": "Histogram", "data": volume_data,
             "options": {
                 "color": "#26a69a",
-                "priceFormat": {
-                    "type": "volume",
-                },
+                "priceFormat": {"type": "volume"},
                 "priceScaleId": "volume",
-                "scaleMargins": {
-                    "top": 0.7,
-                    "bottom": 0,
-                },
+                "scaleMargins": {"top": 0.7, "bottom": 0},
             }
         })
-        
-        # Render chart
-        renderLightweightCharts([
-            {
-                "chart": chart_options,
-                "series": series
-            }
-        ], chart_key)
+
+        # ── Step 5: Render ────────────────────────────────────────────────────────
+        renderLightweightCharts([{"chart": chart_options, "series": series}], chart_key)
 
     def create_chart_controls(df, symbol):
         """Create interactive time range controls"""
@@ -1143,47 +1429,53 @@ if st.session_state.active_tab == "stocks_below_dma":
         # Get selected range
         selected_range = st.session_state.get(f'{symbol}_range', '1Y')
         
+        # Get the chart dataframe (daily data for display)
+        if hasattr(df, 'attrs') and 'daily_data' in df.attrs:
+            chart_df = df.attrs['daily_data']
+        else:
+            chart_df = df
+        
         # Filter data based on range
-        end_date = df.index[-1]
+        end_date = chart_df.index[-1]
         
         if selected_range != 'ALL':
             days = ranges[selected_range]
             start_date = end_date - timedelta(days=days)
             # Make sure start_date is not before the first available date
-            if start_date < df.index[0]:
-                start_date = df.index[0]
-            filtered_df = df[df.index >= start_date]
+            if start_date < chart_df.index[0]:
+                start_date = chart_df.index[0]
+            filtered_df = chart_df[chart_df.index >= start_date]
         else:
-            filtered_df = df
-            start_date = df.index[0]
+            filtered_df = chart_df
+            start_date = chart_df.index[0]
         
         # Custom date range
         with st.expander("📅 Custom Date Range"):
             col1, col2 = st.columns(2)
             
             # Ensure the default values are within the available data range
-            default_start = start_date.date() if start_date >= df.index[0] else df.index[0].date()
+            default_start = start_date.date() if start_date >= chart_df.index[0] else chart_df.index[0].date()
             
             with col1:
                 custom_start = st.date_input(
                     "Start Date",
                     value=default_start,
-                    min_value=df.index[0].date(),
-                    max_value=df.index[-1].date(),
+                    min_value=chart_df.index[0].date(),
+                    max_value=chart_df.index[-1].date(),
                     key=f'start_{symbol}'
                 )
             with col2:
                 custom_end = st.date_input(
                     "End Date",
                     value=end_date.date(),
-                    min_value=df.index[0].date(),
-                    max_value=df.index[-1].date(),
+                    min_value=chart_df.index[0].date(),
+                    max_value=chart_df.index[-1].date(),
                     key=f'end_{symbol}'
                 )
             
             if st.button("Apply Custom Range", key=f'apply_{symbol}'):
                 if custom_start <= custom_end:
-                    filtered_df = df[(df.index.date >= custom_start) & (df.index.date <= custom_end)]
+                    filtered_df = chart_df[(chart_df.index.date >= custom_start) & (chart_df.index.date <= custom_end)]
                     st.success(f"✅ Range: {custom_start} to {custom_end}")
                 else:
                     st.error("❌ Invalid date range")
@@ -1192,8 +1484,14 @@ if st.session_state.active_tab == "stocks_below_dma":
 
     def display_chart_stats(df):
         """Display current price statistics"""
-        latest = df.iloc[-1]
-        previous = df.iloc[-2] if len(df) > 1 else latest
+        # Use daily data if available
+        if hasattr(df, 'attrs') and 'daily_data' in df.attrs:
+            display_df = df.attrs['daily_data']
+        else:
+            display_df = df
+            
+        latest = display_df.iloc[-1]
+        previous = display_df.iloc[-2] if len(display_df) > 1 else latest
         
         col1, col2, col3, col4, col5 = st.columns(5)
         
@@ -1222,14 +1520,20 @@ if st.session_state.active_tab == "stocks_below_dma":
     def display_period_analysis(df, symbol):
         """Display additional analysis for selected period"""
         
+        # Use daily data if available
+        if hasattr(df, 'attrs') and 'daily_data' in df.attrs:
+            display_df = df.attrs['daily_data']
+        else:
+            display_df = df
+        
         st.markdown("#### 📊 Period Analysis")
         
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
-            period_high = df['High'].max()
-            period_low = df['Low'].min()
-            current_price = df['Close'].iloc[-1]
+            period_high = display_df['High'].max()
+            period_low = display_df['Low'].min()
+            current_price = display_df['Close'].iloc[-1]
             
             range_position = ((current_price - period_low) / (period_high - period_low)) * 100
             
@@ -1238,8 +1542,8 @@ if st.session_state.active_tab == "stocks_below_dma":
             st.metric("Range Position", f"{range_position:.1f}%")
         
         with col2:
-            avg_volume = df['Volume'].mean()
-            current_volume = df['Volume'].iloc[-1]
+            avg_volume = display_df['Volume'].mean()
+            current_volume = display_df['Volume'].iloc[-1]
             volume_ratio = (current_volume / avg_volume) * 100
             
             st.metric("Avg Volume", f"{avg_volume:,.0f}")
@@ -1247,20 +1551,20 @@ if st.session_state.active_tab == "stocks_below_dma":
             st.metric("Volume Ratio", f"{volume_ratio:.1f}%")
         
         with col3:
-            volatility = df['Close'].pct_change().std() * 100
-            avg_daily_range = ((df['High'] - df['Low']) / df['Low']).mean() * 100
+            volatility = display_df['Close'].pct_change().std() * 100
+            avg_daily_range = ((display_df['High'] - display_df['Low']) / display_df['Low']).mean() * 100
             
             st.metric("Volatility (Std)", f"{volatility:.2f}%")
             st.metric("Avg Daily Range", f"{avg_daily_range:.2f}%")
         
         with col4:
             # Price change over period
-            period_start = df['Close'].iloc[0]
-            period_end = df['Close'].iloc[-1]
+            period_start = display_df['Close'].iloc[0]
+            period_end = display_df['Close'].iloc[-1]
             period_change = ((period_end - period_start) / period_start) * 100
             
             st.metric("Period Change", f"{period_change:.2f}%")
-            st.metric("Total Days", f"{len(df)}")
+            st.metric("Total Days", f"{len(display_df)}")
 
     def clear_local_cache():
         """Clear all locally cached stock data"""
@@ -1292,8 +1596,7 @@ if st.session_state.active_tab == "stocks_below_dma":
         with col2:
             st.markdown("### Loaded Data")
             st.success(f"✅ Loaded {len(symbols)} NSE tickers")
-            if cached_stocks > 0:
-                st.info(f"💾 Local cache: {cached_stocks} stocks ({cache_size_mb:.2f} MB)")
+
         
         with col3:
             st.markdown("### Analysis Parameters")
@@ -1307,13 +1610,14 @@ if st.session_state.active_tab == "stocks_below_dma":
                 key="max_stocks_input"
             )
 
+            ma_label = f"{ma_period} {'WMA' if ma_type == 'WMA (Weekly)' else 'DMA'}"
             min_pct_below = st.slider(
-                f"Min % below {dma_period} DMA",
+                f"Min % below {ma_label}",
                 min_value=-50.0,
                 max_value=0.0,
                 value=-20.0,
                 step=1.0,
-                help=f"Filter stocks that are at least this % below their {dma_period} DMA",
+                help=f"Filter stocks that are at least this % below their {ma_label}",
                 key="min_pct_slider"
             )
         
@@ -1351,7 +1655,8 @@ if st.session_state.active_tab == "stocks_below_dma":
         with opt_col2:
             st.markdown(f"""
             * ✅ TradingView charts
-            * ✅ DMA: {dma_period} days
+            * ✅ MA Type: {ma_type}
+            * ✅ MA Period: {ma_period}
             """)
         
         st.markdown("### 📊 Chart Features:")
@@ -1374,18 +1679,23 @@ if st.session_state.active_tab == "stocks_below_dma":
     else:
         # Run analysis
         if analyze_button:
-            with st.spinner(f"Analyzing stocks with {dma_period}-day moving average..."):
-                results = analyze_stocks(symbols, dma_period, int(max_stocks))
+            with st.spinner(f"Analyzing stocks with {ma_label}..."):
+                results = analyze_stocks(symbols, ma_period, ma_type, int(max_stocks))
                 st.session_state['results'] = results
-                st.session_state['dma_period'] = dma_period
+                st.session_state['ma_period'] = ma_period
+                st.session_state['ma_type'] = ma_type
                 st.session_state['analysis_done'] = True
 
         # Display results
-        if st.session_state.get('results') is not None and st.session_state.get('dma_period') == dma_period:
+        if (st.session_state.get('results') is not None and 
+            st.session_state.get('ma_period') == ma_period and
+            st.session_state.get('ma_type') == ma_type):
+            
             results = st.session_state['results']
             
             # Filter by minimum percentage
-            pct_col = f'% Below {dma_period} DMA'
+            ma_label = f"{ma_period} {'WMA' if ma_type == 'WMA (Weekly)' else 'DMA'}"
+            pct_col = f'% Below {ma_label}'
             filtered_results = [r for r in results if r[pct_col] <= min_pct_below]
             
             # Summary metrics
@@ -1395,7 +1705,7 @@ if st.session_state.active_tab == "stocks_below_dma":
                 st.metric("Total Analyzed", int(max_stocks))
             
             with col2:
-                st.metric(f"Below {dma_period} DMA", len(filtered_results))
+                st.metric(f"Below {ma_label}", len(filtered_results))
             
             with col3:
                 if filtered_results:
@@ -1415,17 +1725,17 @@ if st.session_state.active_tab == "stocks_below_dma":
             
             # Display results table
             if filtered_results:
-                st.subheader(f"📊 {len(filtered_results)} Stocks Below {dma_period}-Day Moving Average")
+                st.subheader(f"📊 {len(filtered_results)} Stocks Below {ma_label}")
                 
                 # Create DataFrame without the 'Data' column for display
                 display_data = [{k: v for k, v in r.items() if k != 'Data'} for r in filtered_results]
                 df_results = pd.DataFrame(display_data)
                 
-                # Sort by % Below DMA
+                # Sort by % Below MA
                 df_results = df_results.sort_values(pct_col)
                 
                 # Apply custom red gradient styling
-                styled_df = create_red_gradient_style(df_results, dma_period)
+                styled_df = create_red_gradient_style(df_results, ma_label)
                 
                 st.dataframe(
                     styled_df,
@@ -1448,7 +1758,7 @@ if st.session_state.active_tab == "stocks_below_dma":
                 st.download_button(
                     label="📥 Download Results as CSV",
                     data=csv,
-                    file_name=f"stocks_below_{dma_period}dma_{datetime.now().strftime('%Y%m%d')}.csv",
+                    file_name=f"stocks_below_{ma_label.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.csv",
                     mime="text/csv"
                 )
                 
@@ -1456,7 +1766,7 @@ if st.session_state.active_tab == "stocks_below_dma":
                 
                 # Detailed view section with TradingView charts
                 st.subheader("📈 Interactive TradingView Chart")
-                st.markdown("**Full Historical Data (15 Years) - Zoom & Pan Freely**")
+                st.markdown(f"**Full Historical Data (15 Years) - Zoom & Pan Freely - {ma_type}**")
                 
                 # Create a selectbox for choosing stocks to view
                 stock_symbols = [r['Symbol'] for r in filtered_results]
@@ -1486,28 +1796,38 @@ if st.session_state.active_tab == "stocks_below_dma":
                         
                         # Render FULL SCREEN chart - No columns, maximum height
                         st.markdown(f"### 📊 {selected_stock} - Price Chart ({selected_range})")
-                        st.markdown(f"**{len(df_full)} days of historical data available | Showing {len(filtered_df)} days**")
+                        
+                        # Get chart dataframe
+                        if hasattr(df_full, 'attrs') and 'daily_data' in df_full.attrs:
+                            chart_info_df = df_full.attrs['daily_data']
+                        else:
+                            chart_info_df = df_full
+                        
+                        st.markdown(f"**{len(chart_info_df)} days of historical data available | Showing {len(filtered_df)} days**")
                         
                         # Create full-width chart with maximum height
                         create_tradingview_chart(
-                            filtered_df,
+                            df_full,
                             selected_stock,
-                            dma_period,
+                            ma_period,
+                            ma_type,
                             f'chart_{selected_stock}_{selected_range}'
                         )
                         
                         st.markdown("---")
                         
                         # Period analysis below the chart
-                        display_period_analysis(filtered_df, selected_stock)
+                        display_period_analysis(df_full, selected_stock)
                         
             else:
                 st.warning("No stocks found below the specified threshold. Try adjusting the filter.")
         
-        elif st.session_state.get('dma_period') != dma_period and st.session_state.get('results') is not None:
-            st.info(f"⚠️ DMA period changed to {dma_period}. Click 'Analyze Stocks' to re-run analysis with new period.")
-        
-                
+        elif ((st.session_state.get('ma_period') != ma_period or 
+               st.session_state.get('ma_type') != ma_type) and 
+              st.session_state.get('results') is not None):
+            st.info(f"⚠️ MA settings changed to {ma_type} with period {ma_period}. Click 'Analyze Stocks' to re-run analysis with new settings.")
+
+
 # =============================================================================
 # TAB 2: INDEX RATIO ANALYSIS (ENHANCED WITH MONETARY DATA SUPPORT)
 # =============================================================================
@@ -1820,27 +2140,76 @@ elif st.session_state.active_tab == "index_ratio":
                 return None
             
             df = pd.read_csv(file_path)
+            
+            # Strip whitespace from column names
+            df.columns = df.columns.str.strip()
 
             # -------------------------
             # 1️⃣ Detect Date Column
             # -------------------------
-            if 'TIMESTAMP' in df.columns:
-                date_col = 'TIMESTAMP'
-            elif 'Date' in df.columns:
-                date_col = 'Date'
-            else:
-                st.error(f"No date column found in {index_name}.csv")
+            DATE_KEYWORDS = ['timestamp', 'date', 'datetime', 'time', 'DATE', 'TIMESTAMP', 'Date', 'Timestamp']
+            
+            date_col = None
+            for col in df.columns:
+                if col.strip().lower() in DATE_KEYWORDS:
+                    date_col = col
+                    break
+            
+            # Fallback: pick first column that looks like dates
+            if date_col is None:
+                for col in df.columns:
+                    sample = df[col].dropna().head(5)
+                    try:
+                        pd.to_datetime(sample, dayfirst=True)
+                        date_col = col
+                        break
+                    except:
+                        continue
+            
+            if date_col is None:
+                st.error(f"No date column found in {index_name}.csv. Columns: {df.columns.tolist()}")
                 return None
 
             # -------------------------
             # 2️⃣ Detect Price Column
             # -------------------------
-            if 'Close' in df.columns:
-                value_col = 'Close'
-            elif 'Price' in df.columns:
-                value_col = 'Price'
-            else:
-                st.error(f"No price column found in {index_name}.csv")
+            PRICE_KEYWORDS = ['close', 'price', 'adj close', 'adj_close', 'closing', 
+                            'last', 'settlement', 'value', 'nav', 'rate']
+            
+            value_col = None
+            # First: exact match (case-insensitive)
+            for col in df.columns:
+                if col.strip().lower() in PRICE_KEYWORDS:
+                    value_col = col
+                    break
+            
+            # Fallback: partial match
+            if value_col is None:
+                for col in df.columns:
+                    for keyword in PRICE_KEYWORDS:
+                        if keyword in col.strip().lower():
+                            value_col = col
+                            break
+                    if value_col:
+                        break
+            
+            # Last resort: first numeric column that isn't the date column
+            if value_col is None:
+                for col in df.columns:
+                    if col == date_col:
+                        continue
+                    cleaned = (
+                        df[col].astype(str)
+                        .str.replace(',', '', regex=False)
+                        .str.strip()
+                    )
+                    numeric = pd.to_numeric(cleaned, errors='coerce')
+                    if numeric.notna().sum() > len(df) * 0.8:  # >80% valid numbers
+                        value_col = col
+                        break
+            
+            if value_col is None:
+                st.error(f"No price column found in {index_name}.csv. Columns: {df.columns.tolist()}")
                 return None
 
             # -------------------------
@@ -1849,23 +2218,26 @@ elif st.session_state.active_tab == "index_ratio":
             df[date_col] = pd.to_datetime(
                 df[date_col],
                 dayfirst=True,
+                infer_datetime_format=True,
                 errors='coerce'
             )
 
             df = df.dropna(subset=[date_col])
             df = df.sort_values(date_col)
             df.set_index(date_col, inplace=True)
+            df.index.name = 'Date'
 
             # -------------------------
             # 4️⃣ Clean Numeric Values
             # -------------------------
-            # Remove commas like 4,572.47
             df[value_col] = (
                 df[value_col]
                 .astype(str)
                 .str.replace(',', '', regex=False)
+                .str.replace('$', '', regex=False)
+                .str.replace('%', '', regex=False)
+                .str.strip()
             )
-
             df[value_col] = pd.to_numeric(df[value_col], errors='coerce')
             df = df.dropna(subset=[value_col])
 
@@ -1878,8 +2250,10 @@ elif st.session_state.active_tab == "index_ratio":
 
         except Exception as e:
             st.error(f"Error loading global index {index_name}: {e}")
+            import traceback
+            with st.expander("Show detailed error"):
+                st.code(traceback.format_exc())
             return None
-
 
     
     def calculate_ratio(df1, df2, name1, name2):
