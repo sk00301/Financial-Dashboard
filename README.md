@@ -66,14 +66,17 @@ git clone https://github.com/sk00301/Financial-Dashboard.git
 cd Financial-Dashboard
 ```
 
+2️⃣ Install Dependencies
 ```bash
 pip install -r requirements.txt
 ```
 
+3️⃣ Run Application
 ```bash
 streamlit run dashboard.py
 ```
 
+Then open:
 ```bash
 http://localhost:8501
 ```
