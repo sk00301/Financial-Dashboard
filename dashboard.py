@@ -1,11 +1,14 @@
 import streamlit as st
 import pandas as pd
 import yfinance as yf
-from datetime import datetime
 import time
 import plotly.graph_objects as go
 from pathlib import Path
 import os
+import pickle
+from datetime import datetime, timedelta
+from streamlit_lightweight_charts import renderLightweightCharts
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Page configuration - must be first Streamlit command
 st.set_page_config(
@@ -615,6 +618,12 @@ with st.sidebar:
         st.session_state.active_tab = "fno_trading"
         st.rerun()
 
+    if st.button("📊 Index Analysis", use_container_width=True,
+                type="primary" if st.session_state.active_tab == "index_analysis" else "secondary",
+                key="nav_index_analysis"):
+        st.session_state.active_tab = "index_analysis"
+        st.rerun()
+
 
 # =============================================================================
 # TAB 1: STOCKS BELOW DMA/WMA WITH TRADINGVIEW CHARTS (FULL HISTORICAL DATA)
@@ -634,9 +643,32 @@ DATA_dir = Path(__file__).parent / "Data"
 # Create directory for local data storage
 DATA_DIR = DATA_dir / "stock_data_cache"
 os.makedirs(DATA_DIR, exist_ok=True)
+INDEX_DATA_DIR = DATA_dir / "NSE_Indices_Data"
+MONETARY_DATA_FILE = DATA_dir / "Components of Money stock.XLSX"
+GLOBAL_DATA_DIR = DATA_dir / "Global_Indices_Data"
+
 
 # File path for below DMA tracking data
 BELOW_DMA_FILE = DATA_dir / "below_dma(2004).csv"
+
+@st.cache_data(ttl=3600)
+def load_available_indices(directory):
+    """Load available index files from the directory"""
+    try:
+        path = Path(directory)
+        if not path.exists():
+            return []
+            
+            # Get all CSV files
+        csv_files = list(path.glob("*.csv"))
+            
+        # Extract index names (filename without extension)
+        indices = [f.stem for f in csv_files]
+            
+        return sorted(indices)
+    except Exception as e:
+        st.error(f"Error loading indices: {e}")
+        return []
 
 def parse_mixed_dates(date_series):
     """Try multiple date formats to handle mixed date columns"""
@@ -1840,31 +1872,6 @@ elif st.session_state.active_tab == "index_ratio":
     st.sidebar.markdown("---")
     st.sidebar.header("📊 Index Ratio Settings")
     
-    # Data directories
-    INDEX_DATA_DIR = DATA_dir / "NSE_Indices_Data"
-    MONETARY_DATA_FILE = DATA_dir / "Components of Money stock.XLSX"
-    GLOBAL_DATA_DIR = DATA_dir / "Global_Indices_Data"
-
-
-    @st.cache_data(ttl=3600)  # Cache for 1 hour
-    def load_available_indices(directory):
-        """Load available index files from the directory"""
-        try:
-            path = Path(directory)
-            if not path.exists():
-                return []
-            
-            # Get all CSV files
-            csv_files = list(path.glob("*.csv"))
-            
-            # Extract index names (filename without extension)
-            indices = [f.stem for f in csv_files]
-            
-            return sorted(indices)
-        except Exception as e:
-            st.error(f"Error loading indices: {e}")
-            return []
-    
     @st.cache_data(ttl=3600)
     def load_monetary_columns(file_path):
         """Load available columns from monetary data file with better error handling"""
@@ -2764,7 +2771,7 @@ elif st.session_state.active_tab == "index_ratio":
             )
             
 # =============================================================================
-# TAB 3: FNO TRADING ACTIVITY (NEW FUNCTIONALITY)
+# TAB 3: FNO TRADING ACTIVITY 
 # =============================================================================
 
 elif st.session_state.active_tab == "fno_trading":
@@ -2861,13 +2868,13 @@ elif st.session_state.active_tab == "fno_trading":
         ))
         
         # Add Total Net OI
-        fig.add_trace(go.Scatter(
-            x=df_client['Date'],
-            y=df_client['Total_Net_OI'],
-            mode='lines',
-            name='Total Net OI',
-            line=dict(color='#00ff00', width=2.5)
-        ))
+#        fig.add_trace(go.Scatter(
+#            x=df_client['Date'],
+#            y=df_client['Total_Net_OI'],
+#            mode='lines',
+#            name='Total Net OI',
+#            line=dict(color='#00ff00', width=2.5)
+#        ))
         
         # Add zero line
         fig.add_hline(
@@ -3472,6 +3479,383 @@ elif st.session_state.active_tab == "fno_trading":
     else:
         st.error("Failed to load FNO data. Please check the file path.")
 
+# =============================================================================
+# TAB 4: INDEX ANALYSIS — Point Movement Statistics
+# =============================================================================
+
+elif st.session_state.active_tab == "index_analysis":
+    st.header("📊 Index Movement Analysis")
+    st.markdown("Statistical analysis of index price movements over selected periods")
+
+    INDEX_DATA_DIR_T4 = DATA_dir / "NSE_Indices_Data"
+    GLOBAL_DATA_DIR_T4 = DATA_dir / "Global_Indices_Data"
+
+    @st.cache_data(ttl=3600)
+    def load_available_indices_t4(directory):
+        try:
+            path = Path(directory)
+            if not path.exists():
+                return []
+            return sorted([f.stem for f in path.glob("*.csv")])
+        except:
+            return []
+
+    @st.cache_data(ttl=3600)
+    def load_index_ohlc(index_name, directory):
+        """Load index data — auto-detects date and close columns"""
+        try:
+            file_path = Path(directory) / f"{index_name}.csv"
+            if not file_path.exists():
+                return None
+            df = pd.read_csv(file_path)
+            df.columns = df.columns.str.strip()
+
+            # Detect date column
+            date_col = None
+            for col in df.columns:
+                if col.strip().lower() in ['timestamp', 'date', 'datetime', 'time']:
+                    date_col = col
+                    break
+            if date_col is None:
+                for col in df.columns:
+                    try:
+                        pd.to_datetime(df[col].dropna().head(5), dayfirst=True)
+                        date_col = col
+                        break
+                    except:
+                        continue
+            if date_col is None:
+                return None
+
+            df[date_col] = pd.to_datetime(df[date_col], dayfirst=True, errors='coerce')
+            df = df.dropna(subset=[date_col]).sort_values(date_col)
+            df.set_index(date_col, inplace=True)
+            df.index.name = 'Date'
+
+            # Detect close column
+            close_col = None
+            for col in df.columns:
+                if col.strip().lower() in ['close', 'close_index_val', 'closing', 'last', 'price']:
+                    close_col = col
+                    break
+            if close_col is None:
+                for col in df.columns:
+                    if 'close' in col.lower():
+                        close_col = col
+                        break
+            if close_col is None:
+                return None
+
+            df[close_col] = pd.to_numeric(
+                df[close_col].astype(str).str.replace(',', '').str.replace('$', '').str.strip(),
+                errors='coerce'
+            )
+            df = df.dropna(subset=[close_col])
+            df = df.rename(columns={close_col: 'Close'})
+            return df[['Close']]
+        except Exception as e:
+            st.error(f"Error loading {index_name}: {e}")
+            return None
+
+    def compute_movement_stats(df, period, thresholds):
+        """
+        Count how many periods had absolute movement >= each threshold, grouped by year.
+        period: 'D' (daily), 'W' (weekly), 'M' (monthly)
+        """
+        close = df['Close']
+
+        if period == 'D':
+            changes = close.diff().dropna().abs()
+        elif period == 'W':
+            weekly = close.resample('W-FRI').last().dropna()
+            changes = weekly.diff().dropna().abs()
+        elif period == 'M':
+            monthly = close.resample('ME').last().dropna()
+            changes = monthly.diff().dropna().abs()
+        else:
+            return None, None, None
+
+        labels = changes.index
+        years = labels.year
+
+        # Year-wise breakdown
+        result_rows = []
+        for yr in sorted(years.unique()):
+            mask = years == yr
+            yr_changes = changes[mask]
+            row = {'Year': int(yr), 'Total Periods': len(yr_changes)}
+            for t in thresholds:
+                row[f'≥ {t} pts'] = int((yr_changes >= t).sum())
+            result_rows.append(row)
+
+        result_df = pd.DataFrame(result_rows)
+
+        # Overall summary row
+        summary = {'Year': 'Overall', 'Total Periods': len(changes)}
+        for t in thresholds:
+            summary[f'≥ {t} pts'] = int((changes >= t).sum())
+        summary_df = pd.DataFrame([summary])
+
+        return result_df, summary_df, changes
+
+    # ── UI ──────────────────────────────────────────────────────────────────
+
+    nse_indices = load_available_indices_t4(INDEX_DATA_DIR_T4)
+    global_indices = load_available_indices_t4(GLOBAL_DATA_DIR_T4)
+
+    all_idx_options = []
+    if nse_indices:
+        all_idx_options += [f"NSE: {x}" for x in nse_indices]
+    if global_indices:
+        all_idx_options += [f"GLOBAL: {x}" for x in global_indices]
+
+    if not all_idx_options:
+        st.error("❌ No index data files found in NSE_Indices_Data or Global_Indices_Data.")
+        st.stop()
+
+    # Settings expander
+    with st.expander("⚙️ Analysis Settings", expanded=True):
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            selected_index = st.selectbox("Select Index", all_idx_options, key="idx_analysis_select")
+
+        with col2:
+            period_label = st.selectbox(
+                "Grouping Period",
+                ["Daily", "Weekly", "Monthly"],
+                index=0,
+                key="idx_period_select",
+                help="Measure price change over each day / week / month"
+            )
+            period_map = {"Daily": "D", "Weekly": "W", "Monthly": "M"}
+            period_code = period_map[period_label]
+
+        with col3:
+            threshold_input = st.text_input(
+                "Movement Thresholds (comma-separated)",
+                value="50, 100, 250, 500",
+                help="Absolute point thresholds to count",
+                key="idx_thresh_input"
+            )
+            try:
+                thresholds = sorted([int(x.strip()) for x in threshold_input.split(",") if x.strip()])
+            except:
+                thresholds = [50, 100, 250, 500]
+                st.warning("Invalid thresholds — using defaults: 50, 100, 250, 500")
+
+    # Date range
+    col_d1, col_d2 = st.columns(2)
+    with col_d1:
+        start_dt = st.date_input("Start Date", value=pd.to_datetime("2005-01-01"), key="idx_an_start")
+    with col_d2:
+        end_dt = st.date_input("End Date", value=pd.to_datetime("today"), key="idx_an_end")
+
+    # Run
+    if st.button("🔍 Run Analysis", type="primary", key="idx_run_btn"):
+        idx_type, idx_name = selected_index.split(": ", 1)
+        directory = INDEX_DATA_DIR_T4 if idx_type == "NSE" else GLOBAL_DATA_DIR_T4
+
+        with st.spinner(f"Loading {idx_name}..."):
+            df_idx = load_index_ohlc(idx_name, directory)
+
+        if df_idx is None or df_idx.empty:
+            st.error(f"❌ Could not load data for {idx_name}")
+        else:
+            df_idx = df_idx.loc[str(start_dt):str(end_dt)]
+            if df_idx.empty:
+                st.error("No data in selected date range.")
+            else:
+                st.success(
+                    f"✅ Loaded {len(df_idx)} trading days for **{idx_name}** "
+                    f"({df_idx.index.min().strftime('%Y-%m-%d')} → {df_idx.index.max().strftime('%Y-%m-%d')})"
+                )
+
+                result_df, summary_df, all_changes = compute_movement_stats(df_idx, period_code, thresholds)
+
+                if result_df is None:
+                    st.error("Error computing stats.")
+                else:
+                    st.session_state['idx_result'] = result_df
+                    st.session_state['idx_summary'] = summary_df
+                    st.session_state['idx_changes'] = all_changes
+                    st.session_state['idx_thresholds'] = thresholds
+                    st.session_state['idx_name'] = idx_name
+                    st.session_state['idx_period_label'] = period_label
+
+    # ── Display Results ─────────────────────────────────────────────────────
+    if 'idx_result' in st.session_state:
+        result_df = st.session_state['idx_result']
+        summary_df = st.session_state['idx_summary']
+        all_changes = st.session_state['idx_changes']
+        thresholds = st.session_state['idx_thresholds']
+        idx_name = st.session_state['idx_name']
+        period_label = st.session_state['idx_period_label']
+
+        st.markdown("---")
+
+        # ── Summary metric cards ──
+        st.subheader(f"📈 {idx_name} — {period_label} Movement Summary")
+
+        metric_cols = st.columns(len(thresholds) + 1)
+        total_periods = int(summary_df['Total Periods'].iloc[0])
+
+        with metric_cols[0]:
+            st.metric(f"Total {period_label} Periods", f"{total_periods:,}")
+
+        for i, t in enumerate(thresholds):
+            col_name = f'≥ {t} pts'
+            count = int(summary_df[col_name].iloc[0])
+            pct = (count / total_periods * 100) if total_periods else 0
+            with metric_cols[i + 1]:
+                st.metric(f"≥ {t} pts", f"{count:,}", delta=f"{pct:.1f}%")
+
+        st.markdown("---")
+
+        # ── Chart 1: Year-wise grouped bar chart ──
+        st.subheader(f"📊 Year-wise Count of {period_label} Periods by Movement Threshold")
+
+        colors = ['#4da6ff', '#ffa500', '#ff4b4b', '#00ff00', '#ff69b4', '#00bfff', '#ffff00']
+
+        fig_bar = go.Figure()
+        for i, t in enumerate(thresholds):
+            col_name = f'≥ {t} pts'
+            fig_bar.add_trace(go.Bar(
+                x=result_df['Year'].astype(str),
+                y=result_df[col_name],
+                name=col_name,
+                marker_color=colors[i % len(colors)]
+            ))
+
+        fig_bar.update_layout(
+            barmode='group',
+            title=f'{idx_name} — {period_label} periods with movement ≥ threshold (by year)',
+            xaxis_title='Year',
+            yaxis_title=f'Number of {period_label} Periods',
+            template='plotly_dark',
+            height=550,
+            plot_bgcolor='#0e1117',
+            paper_bgcolor='#0e1117',
+            font=dict(color='#ffffff'),
+            legend=dict(yanchor="top", y=0.99, xanchor="right", x=0.99,
+                        bgcolor='rgba(38,39,48,0.8)')
+        )
+        st.plotly_chart(fig_bar, use_container_width=True)
+
+        st.markdown("---")
+
+        # ── Chart 2: Percentage line chart ──
+        st.subheader(f"📊 % of {period_label} Periods Exceeding Thresholds (by Year)")
+
+        fig_pct = go.Figure()
+        for i, t in enumerate(thresholds):
+            col_name = f'≥ {t} pts'
+            pct_values = (result_df[col_name] / result_df['Total Periods'] * 100).round(1)
+            fig_pct.add_trace(go.Scatter(
+                x=result_df['Year'].astype(str),
+                y=pct_values,
+                mode='lines+markers',
+                name=col_name,
+                line=dict(color=colors[i % len(colors)], width=2.5),
+                marker=dict(size=7)
+            ))
+
+        fig_pct.update_layout(
+            title=f'{idx_name} — % of {period_label} periods exceeding threshold (by year)',
+            xaxis_title='Year',
+            yaxis_title='% of Periods',
+            template='plotly_dark',
+            height=500,
+            plot_bgcolor='#0e1117',
+            paper_bgcolor='#0e1117',
+            font=dict(color='#ffffff'),
+            hovermode='x unified',
+            legend=dict(yanchor="top", y=0.99, xanchor="right", x=0.99,
+                        bgcolor='rgba(38,39,48,0.8)')
+        )
+        st.plotly_chart(fig_pct, use_container_width=True)
+
+        st.markdown("---")
+
+        # ── Chart 3: Distribution histogram ──
+        st.subheader(f"📊 Distribution of Absolute {period_label} Changes")
+
+        fig_hist = go.Figure()
+        fig_hist.add_trace(go.Histogram(
+            x=all_changes.values,
+            nbinsx=80,
+            marker_color='#00bfff',
+            opacity=0.75,
+            name='Frequency'
+        ))
+
+        for i, t in enumerate(thresholds):
+            fig_hist.add_vline(
+                x=t, line_dash="dash",
+                line_color=colors[i % len(colors)],
+                annotation_text=f"{t} pts",
+                annotation_position="top",
+                annotation_font_color=colors[i % len(colors)]
+            )
+
+        fig_hist.update_layout(
+            title=f'{idx_name} — Distribution of absolute {period_label.lower()} point changes',
+            xaxis_title='Absolute Point Change',
+            yaxis_title='Frequency',
+            template='plotly_dark',
+            height=450,
+            plot_bgcolor='#0e1117',
+            paper_bgcolor='#0e1117',
+            font=dict(color='#ffffff')
+        )
+        st.plotly_chart(fig_hist, use_container_width=True)
+
+        st.markdown("---")
+
+        # ── Data table ──
+        st.subheader("📋 Year-wise Data Table")
+
+        display_table = pd.concat([result_df, summary_df], ignore_index=True)
+
+        # Add percentage columns alongside counts
+        for t in thresholds:
+            col_name = f'≥ {t} pts'
+            pct_col = f'% ≥ {t} pts'
+            display_table[pct_col] = (
+                display_table[col_name] / display_table['Total Periods'] * 100
+            ).round(1)
+
+        # Build format dict dynamically
+        fmt_int = {col: '{:,.0f}' for col in display_table.columns
+                   if col not in ['Year'] and '% ' not in col}
+        fmt_pct = {col: '{:.1f}%' for col in display_table.columns if '% ' in col}
+        combined_fmt = {**fmt_int, **fmt_pct}
+
+        st.dataframe(
+            display_table.style.format(combined_fmt),
+            use_container_width=True,
+            height=min(450, 50 + len(display_table) * 35)
+        )
+
+        # Download
+        csv_out = display_table.to_csv(index=False)
+        st.download_button(
+            label="📥 Download Analysis as CSV",
+            data=csv_out,
+            file_name=f"index_movement_{idx_name}_{period_label}_{datetime.now().strftime('%Y%m%d')}.csv",
+            mime="text/csv",
+            key="idx_download_btn"
+        )
+
+        # Interpretation guide
+        st.info(f"""
+        **How to read this analysis:**
+        - Each row shows a calendar year and how many {period_label.lower()} periods had absolute point moves ≥ each threshold.
+        - **Higher counts at large thresholds** (e.g. ≥500 pts) indicate higher volatility years.
+        - The **% columns** normalize for partial years (useful for the current year).
+        - The **distribution chart** shows the full histogram of absolute moves — thresholds are marked as vertical lines.
+        """)
+
 # Sidebar information
 with st.sidebar:
     st.markdown("---")
@@ -3492,3 +3876,5 @@ with st.sidebar:
     """)
     
     st.markdown(f"*Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*")
+
+
