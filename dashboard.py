@@ -580,10 +580,20 @@ st.markdown("""
     [data-baseweb="calendar"] [data-highlighted="true"]:not([aria-selected="true"]) {
         background-color: #4d4d4d !important;
     }
-    
-    
+            
+    <style>
+    /* Hide macro indicator button text - cards serve as visual */
+    [key^="macro_btn_"] > button, button[kind="secondary"] {
+        opacity: 0 !important;
+        height: 0px !important;
+        padding: 0 !important;
+        margin: 0 !important;
+        margin-top: -8px !important;
+        border: none !important;
+        pointer-events: auto !important;
+    }
     </style>
-    """, unsafe_allow_html=True)
+""", unsafe_allow_html=True)
 
 # Title and description
 st.markdown("""
@@ -624,6 +634,12 @@ with st.sidebar:
         st.session_state.active_tab = "index_analysis"
         st.rerun()
 
+    if st.button("📡 High Frequency Macro", use_container_width=True,
+                type="primary" if st.session_state.active_tab == "macro_indicators" else "secondary",
+                key="nav_macro"):
+        st.session_state.active_tab = "macro_indicators"
+        st.rerun()
+
 
 # =============================================================================
 # TAB 1: STOCKS BELOW DMA/WMA WITH TRADINGVIEW CHARTS (FULL HISTORICAL DATA)
@@ -641,6 +657,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 DATA_dir = Path(__file__).parent / "Data"
 # Create directory for local data storage
+Macrodata_dir = DATA_dir / "Macro Data"
 DATA_DIR = DATA_dir / "stock_data_cache"
 os.makedirs(DATA_DIR, exist_ok=True)
 INDEX_DATA_DIR = DATA_dir / "NSE_Indices_Data"
@@ -3856,6 +3873,676 @@ elif st.session_state.active_tab == "index_analysis":
         - The **distribution chart** shows the full histogram of absolute moves — thresholds are marked as vertical lines.
         """)
 
+# =============================================================================
+# TAB 5: Macro Indicators 
+# =============================================================================
+
+elif st.session_state.active_tab == "macro_indicators":
+    st.markdown("## 📡 High Frequency Macro Indicators")
+
+    # ── Data source selector (3 checkmarks) ────────────────────────────────
+    st.markdown("""
+    <style>
+    div[data-testid="stHorizontalBlock"] div[data-testid="column"] label {
+        font-size: 14px !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    if 'macro_data_source' not in st.session_state:
+        st.session_state.macro_data_source = "Eco-Pulse"
+
+    src_c1, src_c2, src_c3, _ = st.columns([1.2, 1.5, 1.8, 4])
+    with src_c1:
+        if st.button(
+            ("✅ " if st.session_state.macro_data_source == "Eco-Pulse" else "⬜ ") + "Eco-Pulse",
+            key="src_btn_eco", use_container_width=True
+        ):
+            st.session_state.macro_data_source = "Eco-Pulse"
+            st.session_state.selected_macro_indicator = None
+            st.rerun()
+    with src_c2:
+        if st.button(
+            ("✅ " if st.session_state.macro_data_source == "RBI Macro Indicators" else "⬜ ") + "RBI Macro Indicators",
+            key="src_btn_rbi", use_container_width=True
+        ):
+            st.session_state.macro_data_source = "RBI Macro Indicators"
+            st.session_state.selected_macro_indicator = None
+            st.rerun()
+    with src_c3:
+        if st.button(
+            ("✅ " if st.session_state.macro_data_source == "Other Macro Indicators" else "⬜ ") + "Other Macro Indicators",
+            key="src_btn_other", use_container_width=True
+        ):
+            st.session_state.macro_data_source = "Other Macro Indicators"
+            st.session_state.selected_macro_indicator = None
+            st.rerun()
+
+    st.markdown("---")
+
+    # ── Initialize selected indicator ──────────────────────────────────────
+    if 'selected_macro_indicator' not in st.session_state:
+        st.session_state.selected_macro_indicator = None
+
+    data_source = st.session_state.macro_data_source
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # SOURCE 1: ECO-PULSE (existing logic — YoY Growth % long format CSV)
+    # ══════════════════════════════════════════════════════════════════════════
+    if data_source == "Eco-Pulse":
+        st.markdown("*YoY Growth % — Select an indicator to view historical chart*")
+
+        DATA_PATH = Macrodata_dir / "eco_pulse_long.csv"
+
+        @st.cache_data(ttl=3600)
+        def load_macro_data(path):
+            df = pd.read_csv(path)
+            df.columns = df.columns.str.strip()
+            df['Month'] = pd.to_datetime(df['Month'])
+            return df
+
+        try:
+            macro_df = load_macro_data(DATA_PATH)
+        except Exception as e:
+            st.error(f"Could not load macro data: {e}")
+            st.stop()
+
+        all_months = sorted(macro_df['Month'].unique())
+        latest_month = max(all_months)
+
+        def get_month_offset(base, months_back):
+            target = base - pd.DateOffset(months=months_back)
+            available = [m for m in all_months if m <= target]
+            return max(available) if available else None
+
+        col_months = {
+            "Current":      latest_month,
+            "Prev Month":   get_month_offset(latest_month, 1),
+            "2 Months Ago": get_month_offset(latest_month, 2),
+            "Last Year":    get_month_offset(latest_month, 12),
+            "2 Years Ago":  get_month_offset(latest_month, 24),
+        }
+
+        col_labels = {
+            k: (v.strftime("%b '%y") if v is not None else "N/A")
+            for k, v in col_months.items()
+        }
+
+        indicators = sorted(macro_df['Indicator'].unique())
+        dir_color_map = {"green": "#00c853", "red": "#ff1744", "neutral": "#ffab00"}
+
+        def get_val(indicator, month):
+            if month is None:
+                return None, None
+            row = macro_df[(macro_df['Indicator'] == indicator) & (macro_df['Month'] == month)]
+            if row.empty:
+                return None, None
+            try:
+                return float(row.iloc[0]['Value']), str(row.iloc[0]['Direction']).lower()
+            except (ValueError, TypeError):
+                return None, None
+
+        def fmt_cell(val, direction):
+            if val is None:
+                return "<td style='color:#555555; text-align:right; padding:7px 14px;'>—</td>"
+            color = dir_color_map.get(direction, "#ffffff")
+            if val == 0:
+                return f"<td style='color:{color}; text-align:right; font-weight:600; padding:7px 14px;'>0.0%</td>"
+            sign = "+" if val > 0 else ""
+            return f"<td style='color:{color}; text-align:right; font-weight:600; padding:7px 14px;'>{sign}{val:.1f}%</td>"
+
+        header_cells = ""
+        for k in col_months:
+            header_cells += (
+                "<th style=\"text-align:right; color:#b0b0b0; font-weight:500; "
+                "padding:10px 14px; white-space:nowrap; border-bottom:2px solid #ff4b4b;\">"
+                f"{col_labels[k]}<br><span style=\"font-size:10px; color:#666;\">{k}</span></th>"
+            )
+
+        rows_html = ""
+        for i, ind in enumerate(indicators):
+            is_selected = st.session_state.selected_macro_indicator == ind
+            row_bg = "#2a1a1a" if is_selected else ("#1a1a2e" if i % 2 == 0 else "#161625")
+            row_border = "border-left: 3px solid #ff4b4b;" if is_selected else "border-left: 3px solid transparent;"
+            name_color = "#ff6b6b" if is_selected else "#ffffff"
+            font_weight = "600" if is_selected else "400"
+
+            cells = ""
+            for col_key, month in col_months.items():
+                val, direction = get_val(ind, month)
+                cells += fmt_cell(val, direction)
+
+            rows_html += (
+                f"<tr style=\"background:{row_bg}; {row_border}\">"
+                f"<td style=\"color:{name_color}; padding:7px 14px; font-size:13px; "
+                f"white-space:nowrap; font-weight:{font_weight};\">{ind}</td>"
+                f"{cells}</tr>"
+            )
+
+        table_html = (
+            "<div style=\"overflow-x:auto; border-radius:8px; border:1px solid #3d3d3d; margin-bottom:16px;\">"
+            "<table style=\"width:100%; border-collapse:collapse; font-size:13px;\">"
+            "<thead><tr style=\"background:#1e1e2e;\">"
+            "<th style=\"text-align:left; color:#b0b0b0; font-weight:500; "
+            "padding:10px 14px; border-bottom:2px solid #ff4b4b; min-width:220px;\">Indicator</th>"
+            f"{header_cells}"
+            "</tr></thead>"
+            f"<tbody>{rows_html}</tbody>"
+            "</table></div>"
+        )
+
+        st.markdown(table_html, unsafe_allow_html=True)
+
+        sel_col, m1, m2, m3, m4 = st.columns([2.5, 1, 1, 1, 1])
+
+        with sel_col:
+            indicator_options = ["— Select an indicator —"] + indicators
+            current_index = (
+                indicators.index(st.session_state.selected_macro_indicator) + 1
+                if st.session_state.selected_macro_indicator in indicators
+                else 0
+            )
+            selected = st.selectbox(
+                "📊 Select indicator to chart:",
+                indicator_options,
+                index=current_index,
+                key="macro_selectbox",
+                label_visibility="collapsed"
+            )
+            if selected != "— Select an indicator —":
+                st.session_state.selected_macro_indicator = selected
+            else:
+                st.session_state.selected_macro_indicator = None
+
+        if st.session_state.selected_macro_indicator:
+            ind_df_stats = macro_df[
+                macro_df['Indicator'] == st.session_state.selected_macro_indicator
+            ].sort_values('Month')
+
+            numeric_vals = pd.to_numeric(ind_df_stats['Value'], errors='coerce')
+            valid_vals = numeric_vals.dropna()
+            valid_vals = valid_vals[valid_vals != 0]
+
+            cur_val = pd.to_numeric(ind_df_stats.iloc[-1]['Value'], errors='coerce')
+
+            with m1:
+                st.metric("Current", f"{cur_val:+.1f}%" if pd.notna(cur_val) else "N/A")
+            with m2:
+                st.metric("Average", f"{valid_vals.mean():+.1f}%" if not valid_vals.empty else "N/A")
+            with m3:
+                st.metric("Max", f"{valid_vals.max():+.1f}%" if not valid_vals.empty else "N/A")
+            with m4:
+                st.metric("Min", f"{valid_vals.min():+.1f}%" if not valid_vals.empty else "N/A")
+
+        st.markdown("---")
+
+        if st.session_state.selected_macro_indicator:
+            selected_ind = st.session_state.selected_macro_indicator
+            ind_df = macro_df[macro_df['Indicator'] == selected_ind].sort_values('Month')
+
+            st.markdown(f"### 📈 {selected_ind} — Historical YoY Growth %")
+
+            if ind_df.empty:
+                st.warning("No data available for this indicator.")
+            else:
+                bar_colors = (
+                    ind_df['Direction']
+                    .str.lower()
+                    .map(dir_color_map)
+                    .fillna("#888888")
+                    .tolist()
+                )
+
+                fig = go.Figure()
+                fig.add_trace(go.Bar(
+                    x=ind_df['Month'],
+                    y=ind_df['Value'],
+                    marker_color=bar_colors,
+                    marker_line_width=0,
+                    name="YoY %",
+                    hovertemplate="<b>%{x|%b %Y}</b><br>%{y:+.2f}%<extra></extra>"
+                ))
+                fig.add_trace(go.Scatter(
+                    x=ind_df['Month'],
+                    y=ind_df['Value'],
+                    mode='lines+markers',
+                    line=dict(color='#ffffff', width=1.5, dash='dot'),
+                    marker=dict(size=4, color='#ffffff'),
+                    name="Trend",
+                    hoverinfo='skip'
+                ))
+                fig.add_hline(y=0, line_color="#444444", line_width=1.2)
+                fig.update_layout(
+                    plot_bgcolor='#0e1117', paper_bgcolor='#0e1117', font_color='#ffffff',
+                    xaxis=dict(
+                        showgrid=False, tickformat="%b %Y",
+                        tickfont=dict(color='#b0b0b0', size=11),
+                        title_font=dict(color='#ffffff'),
+                        rangeslider=dict(visible=True, bgcolor='#1a1a2e', thickness=0.05),
+                        rangeselector=dict(
+                            buttons=[
+                                dict(count=1, label="1Y", step="year", stepmode="backward"),
+                                dict(count=3, label="3Y", step="year", stepmode="backward"),
+                                dict(count=5, label="5Y", step="year", stepmode="backward"),
+                                dict(step="all", label="All"),
+                            ],
+                            bgcolor='#262730', activecolor='#ff4b4b',
+                            font=dict(color='#ffffff'),
+                        ),
+                    ),
+                    yaxis=dict(
+                        showgrid=True, gridcolor='#1e1e2e',
+                        tickfont=dict(color='#b0b0b0', size=11),
+                        title="YoY Growth %", title_font=dict(color='#b0b0b0'),
+                        zeroline=False, ticksuffix="%",
+                    ),
+                    legend=dict(
+                        font=dict(color='#ffffff'), bgcolor='rgba(0,0,0,0)',
+                        orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1,
+                    ),
+                    margin=dict(l=10, r=10, t=50, b=60),
+                    height=460, bargap=0.15,
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+                with st.expander("📋 View Raw Data Table"):
+                    display_df = ind_df[['Month', 'Value', 'Direction']].copy()
+                    display_df['Month'] = display_df['Month'].dt.strftime('%b %Y')
+                    display_df['Value'] = display_df['Value'].apply(
+                        lambda x: f"{float(x):+.1f}%" if pd.notna(x) else "N/A"
+                    )
+                    display_df.columns = ['Month', 'YoY Growth %', 'Signal']
+                    st.dataframe(
+                        display_df.sort_values('Month', ascending=False).reset_index(drop=True),
+                        use_container_width=True, hide_index=True
+                    )
+        else:
+            st.markdown("""
+            <div style='text-align:center; padding:60px 20px; color:#555555;'>
+                <div style='font-size:48px;'>📊</div>
+                <div style='font-size:16px; margin-top:12px;'>
+                    Select an indicator from the dropdown above to view its historical chart
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # SOURCE 2: RBI MACRO INDICATORS (50 Macroeconomic Indicators.xlsx — Monthly tab)
+    # ══════════════════════════════════════════════════════════════════════════
+    elif data_source == "RBI Macro Indicators":
+        st.markdown("*Raw values — Select an indicator to view historical chart*")
+
+        RBI_PATH = Macrodata_dir / "50 Macroeconomic Indicators.xlsx"
+
+        @st.cache_data(ttl=3600)
+        def load_rbi_data(path):
+            df = pd.read_excel(path, sheet_name="Monthly", header=0)
+            # First column is the period/date
+            df.rename(columns={df.columns[0]: "Period"}, inplace=True)
+            df['Period'] = pd.to_datetime(df['Period'], errors='coerce')
+            df.dropna(subset=['Period'], inplace=True)
+            df.sort_values('Period', inplace=True)
+            df.reset_index(drop=True, inplace=True)
+            return df
+
+        try:
+            rbi_df = load_rbi_data(RBI_PATH)
+        except Exception as e:
+            st.error(f"Could not load RBI data: {e}")
+            st.stop()
+
+        # All indicator columns (everything except Period)
+        rbi_indicators = [c for c in rbi_df.columns if c != "Period"]
+
+        # ── Summary table: latest 3 months per indicator ──────────────────
+        latest_periods = rbi_df['Period'].sort_values().unique()[-3:]
+        sub = rbi_df[rbi_df['Period'].isin(latest_periods)].copy()
+        sub['Period_label'] = sub['Period'].dt.strftime("%b '%y")
+
+        period_labels = [p.strftime("%b '%y") for p in sorted(latest_periods)]
+
+        rows_html = ""
+        for i, ind in enumerate(rbi_indicators):
+            is_selected = st.session_state.selected_macro_indicator == ind
+            row_bg = "#2a1a1a" if is_selected else ("#1a1a2e" if i % 2 == 0 else "#161625")
+            row_border = "border-left: 3px solid #ff4b4b;" if is_selected else "border-left: 3px solid transparent;"
+            name_color = "#ff6b6b" if is_selected else "#ffffff"
+            font_weight = "600" if is_selected else "400"
+
+            cells = ""
+            for period in sorted(latest_periods):
+                row = sub[sub['Period'] == period]
+                if row.empty or pd.isna(row.iloc[0].get(ind, None)):
+                    cells += "<td style='color:#555555; text-align:right; padding:7px 14px;'>—</td>"
+                else:
+                    val = row.iloc[0][ind]
+                    try:
+                        fval = float(val)
+                        cells += f"<td style='color:#e0e0e0; text-align:right; padding:7px 14px;'>{fval:,.2f}</td>"
+                    except (ValueError, TypeError):
+                        cells += f"<td style='color:#e0e0e0; text-align:right; padding:7px 14px;'>{val}</td>"
+
+            rows_html += (
+                f"<tr style=\"background:{row_bg}; {row_border}\">"
+                f"<td style=\"color:{name_color}; padding:7px 14px; font-size:13px; "
+                f"white-space:nowrap; font-weight:{font_weight};\">{ind}</td>"
+                f"{cells}</tr>"
+            )
+
+        header_cells = "".join(
+            f"<th style=\"text-align:right; color:#b0b0b0; font-weight:500; "
+            f"padding:10px 14px; white-space:nowrap; border-bottom:2px solid #ff4b4b;\">{lbl}</th>"
+            for lbl in period_labels
+        )
+
+        table_html = (
+            "<div style=\"overflow-x:auto; border-radius:8px; border:1px solid #3d3d3d; margin-bottom:16px;\">"
+            "<table style=\"width:100%; border-collapse:collapse; font-size:13px;\">"
+            "<thead><tr style=\"background:#1e1e2e;\">"
+            "<th style=\"text-align:left; color:#b0b0b0; font-weight:500; "
+            "padding:10px 14px; border-bottom:2px solid #ff4b4b; min-width:280px;\">Indicator</th>"
+            f"{header_cells}"
+            "</tr></thead>"
+            f"<tbody>{rows_html}</tbody>"
+            "</table></div>"
+        )
+        st.markdown(table_html, unsafe_allow_html=True)
+
+        # ── Selector ──────────────────────────────────────────────────────
+        sel_col, m1, m2, m3, m4 = st.columns([2.5, 1, 1, 1, 1])
+
+        with sel_col:
+            indicator_options = ["— Select an indicator —"] + rbi_indicators
+            current_index = (
+                rbi_indicators.index(st.session_state.selected_macro_indicator) + 1
+                if st.session_state.selected_macro_indicator in rbi_indicators
+                else 0
+            )
+            selected = st.selectbox(
+                "📊 Select indicator to chart:",
+                indicator_options,
+                index=current_index,
+                key="rbi_macro_selectbox",
+                label_visibility="collapsed"
+            )
+            if selected != "— Select an indicator —":
+                st.session_state.selected_macro_indicator = selected
+            else:
+                st.session_state.selected_macro_indicator = None
+
+        if st.session_state.selected_macro_indicator:
+            ind_series = pd.to_numeric(rbi_df[st.session_state.selected_macro_indicator], errors='coerce')
+            valid_vals = ind_series.dropna()
+
+            with m1:
+                st.metric("Latest", f"{valid_vals.iloc[-1]:,.2f}" if not valid_vals.empty else "N/A")
+            with m2:
+                st.metric("Average", f"{valid_vals.mean():,.2f}" if not valid_vals.empty else "N/A")
+            with m3:
+                st.metric("Max", f"{valid_vals.max():,.2f}" if not valid_vals.empty else "N/A")
+            with m4:
+                st.metric("Min", f"{valid_vals.min():,.2f}" if not valid_vals.empty else "N/A")
+
+        st.markdown("---")
+
+        if st.session_state.selected_macro_indicator:
+            selected_ind = st.session_state.selected_macro_indicator
+            ind_df = rbi_df[['Period', selected_ind]].copy()
+            ind_df[selected_ind] = pd.to_numeric(ind_df[selected_ind], errors='coerce')
+            ind_df.dropna(subset=[selected_ind], inplace=True)
+
+            st.markdown(f"### 📈 {selected_ind} — Historical Values")
+
+            if ind_df.empty:
+                st.warning("No data available for this indicator.")
+            else:
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=ind_df['Period'],
+                    y=ind_df[selected_ind],
+                    mode='lines+markers',
+                    line=dict(color='#ff4b4b', width=2),
+                    marker=dict(size=4, color='#ff4b4b'),
+                    name=selected_ind,
+                    hovertemplate="<b>%{x|%b %Y}</b><br>%{y:,.2f}<extra></extra>"
+                ))
+                fig.add_hline(y=0, line_color="#444444", line_width=1.2)
+                fig.update_layout(
+                    plot_bgcolor='#0e1117', paper_bgcolor='#0e1117', font_color='#ffffff',
+                    xaxis=dict(
+                        showgrid=False, tickformat="%b %Y",
+                        tickfont=dict(color='#b0b0b0', size=11),
+                        rangeslider=dict(visible=True, bgcolor='#1a1a2e', thickness=0.05),
+                        rangeselector=dict(
+                            buttons=[
+                                dict(count=1, label="1Y", step="year", stepmode="backward"),
+                                dict(count=3, label="3Y", step="year", stepmode="backward"),
+                                dict(count=5, label="5Y", step="year", stepmode="backward"),
+                                dict(step="all", label="All"),
+                            ],
+                            bgcolor='#262730', activecolor='#ff4b4b',
+                            font=dict(color='#ffffff'),
+                        ),
+                    ),
+                    yaxis=dict(
+                        showgrid=True, gridcolor='#1e1e2e',
+                        tickfont=dict(color='#b0b0b0', size=11),
+                        title="Value", title_font=dict(color='#b0b0b0'),
+                        zeroline=False,
+                    ),
+                    legend=dict(
+                        font=dict(color='#ffffff'), bgcolor='rgba(0,0,0,0)',
+                        orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1,
+                    ),
+                    margin=dict(l=10, r=10, t=50, b=60),
+                    height=460,
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+                with st.expander("📋 View Raw Data Table"):
+                    display_df = ind_df.copy()
+                    display_df['Period'] = display_df['Period'].dt.strftime('%b %Y')
+                    display_df.columns = ['Month', 'Value']
+                    st.dataframe(
+                        display_df.sort_values('Month', ascending=False).reset_index(drop=True),
+                        use_container_width=True, hide_index=True
+                    )
+        else:
+            st.markdown("""
+            <div style='text-align:center; padding:60px 20px; color:#555555;'>
+                <div style='font-size:48px;'>📊</div>
+                <div style='font-size:16px; margin-top:12px;'>
+                    Select an indicator from the dropdown above to view its historical chart
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # SOURCE 3: OTHER MACRO INDICATORS (Other Macroeconomic Indicators.xlsx — Monthly tab)
+    # ══════════════════════════════════════════════════════════════════════════
+    elif data_source == "Other Macro Indicators":
+        st.markdown("*Raw values — Select an indicator to view historical chart*")
+
+        OTHER_PATH = Macrodata_dir / "Other Macroeconomic Indicators.xlsx"
+
+        @st.cache_data(ttl=3600)
+        def load_other_data(path):
+            df = pd.read_excel(path, sheet_name="Monthly", header=0)
+            df.rename(columns={df.columns[0]: "Period"}, inplace=True)
+            df['Period'] = pd.to_datetime(df['Period'], errors='coerce')
+            df.dropna(subset=['Period'], inplace=True)
+            df.sort_values('Period', inplace=True)
+            df.reset_index(drop=True, inplace=True)
+            return df
+
+        try:
+            other_df = load_other_data(OTHER_PATH)
+        except Exception as e:
+            st.error(f"Could not load Other Macro data: {e}")
+            st.stop()
+
+        other_indicators = [c for c in other_df.columns if c != "Period"]
+
+        latest_periods = other_df['Period'].sort_values().unique()[-3:]
+        sub = other_df[other_df['Period'].isin(latest_periods)].copy()
+        period_labels = [p.strftime("%b '%y") for p in sorted(latest_periods)]
+
+        rows_html = ""
+        for i, ind in enumerate(other_indicators):
+            is_selected = st.session_state.selected_macro_indicator == ind
+            row_bg = "#2a1a1a" if is_selected else ("#1a1a2e" if i % 2 == 0 else "#161625")
+            row_border = "border-left: 3px solid #ff4b4b;" if is_selected else "border-left: 3px solid transparent;"
+            name_color = "#ff6b6b" if is_selected else "#ffffff"
+            font_weight = "600" if is_selected else "400"
+
+            cells = ""
+            for period in sorted(latest_periods):
+                row = sub[sub['Period'] == period]
+                if row.empty or ind not in row.columns or pd.isna(row.iloc[0].get(ind, None)):
+                    cells += "<td style='color:#555555; text-align:right; padding:7px 14px;'>—</td>"
+                else:
+                    val = row.iloc[0][ind]
+                    try:
+                        fval = float(val)
+                        cells += f"<td style='color:#e0e0e0; text-align:right; padding:7px 14px;'>{fval:,.2f}</td>"
+                    except (ValueError, TypeError):
+                        cells += f"<td style='color:#e0e0e0; text-align:right; padding:7px 14px;'>{val}</td>"
+
+            rows_html += (
+                f"<tr style=\"background:{row_bg}; {row_border}\">"
+                f"<td style=\"color:{name_color}; padding:7px 14px; font-size:13px; "
+                f"white-space:nowrap; font-weight:{font_weight};\">{ind}</td>"
+                f"{cells}</tr>"
+            )
+
+        header_cells = "".join(
+            f"<th style=\"text-align:right; color:#b0b0b0; font-weight:500; "
+            f"padding:10px 14px; white-space:nowrap; border-bottom:2px solid #ff4b4b;\">{lbl}</th>"
+            for lbl in period_labels
+        )
+
+        table_html = (
+            "<div style=\"overflow-x:auto; border-radius:8px; border:1px solid #3d3d3d; margin-bottom:16px;\">"
+            "<table style=\"width:100%; border-collapse:collapse; font-size:13px;\">"
+            "<thead><tr style=\"background:#1e1e2e;\">"
+            "<th style=\"text-align:left; color:#b0b0b0; font-weight:500; "
+            "padding:10px 14px; border-bottom:2px solid #ff4b4b; min-width:280px;\">Indicator</th>"
+            f"{header_cells}"
+            "</tr></thead>"
+            f"<tbody>{rows_html}</tbody>"
+            "</table></div>"
+        )
+        st.markdown(table_html, unsafe_allow_html=True)
+
+        sel_col, m1, m2, m3, m4 = st.columns([2.5, 1, 1, 1, 1])
+
+        with sel_col:
+            indicator_options = ["— Select an indicator —"] + other_indicators
+            current_index = (
+                other_indicators.index(st.session_state.selected_macro_indicator) + 1
+                if st.session_state.selected_macro_indicator in other_indicators
+                else 0
+            )
+            selected = st.selectbox(
+                "📊 Select indicator to chart:",
+                indicator_options,
+                index=current_index,
+                key="other_macro_selectbox",
+                label_visibility="collapsed"
+            )
+            if selected != "— Select an indicator —":
+                st.session_state.selected_macro_indicator = selected
+            else:
+                st.session_state.selected_macro_indicator = None
+
+        if st.session_state.selected_macro_indicator:
+            ind_series = pd.to_numeric(other_df[st.session_state.selected_macro_indicator], errors='coerce')
+            valid_vals = ind_series.dropna()
+
+            with m1:
+                st.metric("Latest", f"{valid_vals.iloc[-1]:,.2f}" if not valid_vals.empty else "N/A")
+            with m2:
+                st.metric("Average", f"{valid_vals.mean():,.2f}" if not valid_vals.empty else "N/A")
+            with m3:
+                st.metric("Max", f"{valid_vals.max():,.2f}" if not valid_vals.empty else "N/A")
+            with m4:
+                st.metric("Min", f"{valid_vals.min():,.2f}" if not valid_vals.empty else "N/A")
+
+        st.markdown("---")
+
+        if st.session_state.selected_macro_indicator:
+            selected_ind = st.session_state.selected_macro_indicator
+            ind_df = other_df[['Period', selected_ind]].copy()
+            ind_df[selected_ind] = pd.to_numeric(ind_df[selected_ind], errors='coerce')
+            ind_df.dropna(subset=[selected_ind], inplace=True)
+
+            st.markdown(f"### 📈 {selected_ind} — Historical Values")
+
+            if ind_df.empty:
+                st.warning("No data available for this indicator.")
+            else:
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=ind_df['Period'],
+                    y=ind_df[selected_ind],
+                    mode='lines+markers',
+                    line=dict(color='#ff4b4b', width=2),
+                    marker=dict(size=4, color='#ff4b4b'),
+                    name=selected_ind,
+                    hovertemplate="<b>%{x|%b %Y}</b><br>%{y:,.2f}<extra></extra>"
+                ))
+                fig.add_hline(y=0, line_color="#444444", line_width=1.2)
+                fig.update_layout(
+                    plot_bgcolor='#0e1117', paper_bgcolor='#0e1117', font_color='#ffffff',
+                    xaxis=dict(
+                        showgrid=False, tickformat="%b %Y",
+                        tickfont=dict(color='#b0b0b0', size=11),
+                        rangeslider=dict(visible=True, bgcolor='#1a1a2e', thickness=0.05),
+                        rangeselector=dict(
+                            buttons=[
+                                dict(count=1, label="1Y", step="year", stepmode="backward"),
+                                dict(count=3, label="3Y", step="year", stepmode="backward"),
+                                dict(count=5, label="5Y", step="year", stepmode="backward"),
+                                dict(step="all", label="All"),
+                            ],
+                            bgcolor='#262730', activecolor='#ff4b4b',
+                            font=dict(color='#ffffff'),
+                        ),
+                    ),
+                    yaxis=dict(
+                        showgrid=True, gridcolor='#1e1e2e',
+                        tickfont=dict(color='#b0b0b0', size=11),
+                        title="Value", title_font=dict(color='#b0b0b0'),
+                        zeroline=False,
+                    ),
+                    legend=dict(
+                        font=dict(color='#ffffff'), bgcolor='rgba(0,0,0,0)',
+                        orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1,
+                    ),
+                    margin=dict(l=10, r=10, t=50, b=60),
+                    height=460,
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+                with st.expander("📋 View Raw Data Table"):
+                    display_df = ind_df.copy()
+                    display_df['Period'] = display_df['Period'].dt.strftime('%b %Y')
+                    display_df.columns = ['Month', 'Value']
+                    st.dataframe(
+                        display_df.sort_values('Month', ascending=False).reset_index(drop=True),
+                        use_container_width=True, hide_index=True
+                    )
+        else:
+            st.markdown("""
+            <div style='text-align:center; padding:60px 20px; color:#555555;'>
+                <div style='font-size:48px;'>📊</div>
+                <div style='font-size:16px; margin-top:12px;'>
+                    Select an indicator from the dropdown above to view its historical chart
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            
 # Sidebar information
 with st.sidebar:
     st.markdown("---")
