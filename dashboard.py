@@ -2572,14 +2572,18 @@ elif st.session_state.active_tab == "index_ratio":
         with col1:
             start_date = st.date_input(
                 "Start Date",
-                value=pd.to_datetime("2020-01-01"),
+                value=pd.to_datetime("1995-01-01"),   # default start
+                min_value=pd.to_datetime("1995-01-01"),  # earliest allowed
+                max_value=pd.to_datetime("today"),
                 key='start_date'
             )
-        
+
         with col2:
             end_date = st.date_input(
                 "End Date",
                 value=pd.to_datetime("today"),
+                min_value=pd.to_datetime("1995-01-01"),
+                max_value=pd.to_datetime("today"),
                 key='end_date'
             )
         
@@ -4542,7 +4546,7 @@ elif st.session_state.active_tab == "macro_indicators":
             </div>
             """, unsafe_allow_html=True)
 
-            
+
 # Sidebar information
 with st.sidebar:
     st.markdown("---")
